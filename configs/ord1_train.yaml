@@ -1,0 +1,136 @@
+# condition-Diffusion on ord
+model:   
+  target: models.DDPM.ConditionalDiffusion 
+  params:
+      given_betas: null
+      timesteps: 1000
+      beta_schedule: "linear"
+      linear_start: 0.00085
+      linear_end: 0.012
+      cosine_s: 8e-3
+      loss_type: "l2"
+      log_every_t: 50  
+      theta_dims: 9
+      cond_stage_trainable: False
+      conditioning_key: crossattn
+      cond_stage_forward: null
+      cosine_loss_weight: 0.0
+      
+      diff_model_config:
+        target: modules.diffusion_modules.transformer_utils.AP2ParaTransformer
+        params:
+          condition_seq_len: 77    
+          n_layer: 8  # Block数量 
+          n_embd: 9 # attention模块参数，the embed dim, 对应输入的空间维度
+          condition_dim: 128  # attention模块参数，条件对应的空间维度
+          n_head: 4   # attention模块参数，the number of heads
+          content_seq_len: 16  # attention模块参数，the max length of sequence
+          attn_pdrop: 0.0        # attention模块参数，attention dropout prob 
+          resid_pdrop: 0.0       # attention模块参数，residual attention dropout prob
+          mlp_hidden_times: 4    # mlp网络结构参数，升维倍数
+          block_activate: GELU2  # 激活函数类型
+          attn_type: 'selfcross' # 注意力机制类型 
+          diffusion_step: 1000
+          timestep_type: 'adalayernorm'    # adainsnorm or adalayernorm and abs
+          mlp_type: 'fc'
+          use_biomarks: False  # 是否使用AP相关的生物标志物，即手工特征
+          biomarks_embd: 36    # 生物标志物维度
+          level1_biomarks: 0   # 0：提前使用mlp投影生物标志物；1：不投影
+          level2_biomarks: 1   # 0: 特征融合；1：分别使用两个独立的交叉注意力机制引入
+          level3_biomarks: 2   # 0: 拼接+再次投影； 1：拼接(相加)；2：仅针对分别引入，使用串行交叉注意力机制  
+          use_tokens: False # 是否将\theta认为是tokens_num
+          use_content_emb: True # 是否使用一层全连接层得到embedding对应的输入
+          content_times: 128 # Embedding层升维倍数
+          tokens_nums: 9 # tokens 数量, 如果不transpose（use_tokens）且tokens_nums ==9,就会在embedding后reshape
+          use_pos_emb: False # 是否使用位置编码
+          pos_emb_type: 0 # 0：正弦编码，1：可学习位置编码
+ 
+      first_stage_config:
+        target: null
+        params: null
+
+      cond_stage_config:
+        target: modules.t_series_encoders.CoST_main.cost.CoST
+        params:
+          ckpt_path: ".\\save\\t_series_encoders\\CoST\\checkpoints\\xxxx"
+          dataset: ".\\save\\dataset\\ord_model"
+          input_dims: 1    
+          max_train_length: 2001 
+
+          device: "cuda"
+
+          batch_size: 64 
+          iters: null
+          epochs: 100 
+          save_every: 1
+          lr: 0.001  
+          
+          mask_mode: "all_true" 
+          hidden_dims: 128 
+          depth: 10  
+          kernels: [1, 2, 4, 8, 16, 32, 64, 128]  
+          repr_dims: 128 
+          alpha: 0.0005  
+solver:
+  max_epochs: 300
+  save_epochs: 5  
+  validation_epochs: 5  
+  sample_iterations: 20000  # epoch # 30000 # 训练阶段：每隔sample_iterations定期导出训练结果
+  base_lr: 3.0e-6  # 5.0e-05 from ldm 3.0e-6 from vq-diffusion
+  adjust_lr: none # default is None,  not adjust lr according to total batch_size
+  print_specific_things: True 
+
+  # config for ema
+  ema:
+    decay: 0.99
+    update_interval: 25
+    device: cpu
+
+  clip_grad_norm:
+    target: utils.clip_grad_norm.ClipGradNorm
+    params:
+      start_iteration: 0
+      end_iteration: 5000
+      max_norm: 0.5
+
+  optimizers_and_schedulers: # a list of configures, so we can config several optimizers and schedulers
+  - name: none # default is None
+    optimizer:
+      target: torch.optim.AdamW
+      params: 
+        betas: !!python/tuple [0.9, 0.96]
+        weight_decay: 4.5e-2
+            # target: ZeroRedundancyOptimizer
+            # optimizer_class: torch.optim.AdamW
+            # params:
+            # betas: !!python/tuple [0.9, 0.96]
+            # weight_decay: 4.5e-2
+    scheduler:
+      step_iteration: 1   
+      target: utils.lr_scheduler.ReduceLROnPlateauWithWarmup
+      params:
+        factor: 0.5  # factor (float): Factor by which the learning rate will be reduced. new_lr = lr * factor. Default: 0.1.
+        patience: 10000 # 900batch, Number of epochs with no improvement after which learning rate will be reduced. Default: 10.
+        min_lr: 1.0e-6  # A scalar or a list of scalars. A lower bound on the learning rate of all param groups or each group respectively. Default: 0.
+        threshold: 1.0e-1 # Threshold for measuring the new optimum, to only focus on significant changes. Default: 1e-4.
+        threshold_mode: rel # One of `rel`, `abs`. In `rel` mode,  dynamic_threshold = best * ( 1 + threshold ) in 'max' mode or best * ( 1 - threshold ) in `min` mode. In `abs` mode, dynamic_threshold = best + threshold in `max` mode or best - threshold in `min` mode. Default: 'rel'.
+        warmup_lr: 4.5e-4 # the lr to be touched after warmup
+        warmup: 1000 # the number of steps to warmup
+
+
+# necessary
+dataloader:
+  data_root: .\\save\\dataset\\ord_model
+  batch_size: 32
+  num_workers: 1
+  train_datasets: # a list of configures, so we can combine several schedulers
+    - target: models.data.ord_dataset.OrdDataset
+      params:
+        data_root: .\\save\\dataset\\ord_model
+        phase: train4
+  validation_datasets:
+    - target: models.data.ord_dataset.OrdDataset
+      params:
+        data_root: .\\save\\dataset\\ord_model
+        phase: val4
+        sigma: 0.0
